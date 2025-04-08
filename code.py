@@ -4,6 +4,8 @@ from PIL import Image, ImageTk, ImageDraw
 import subprocess
 import threading
 import time
+import os
+import psutil
 
 class CommandScheduler:
     def __init__(self, root):
@@ -18,19 +20,15 @@ class CommandScheduler:
         self.play_icon = self.generate_play_icon(24)
         self.stop_icon = self.generate_stop_icon(24)
         app_icon = self.generate_play_icon(32)
-
-        # Set application icon
         root.iconphoto(False, app_icon)
 
-        # Configure grid layout
+        # Grid layout
         root.grid_columnconfigure(0, weight=1, uniform="buttons")
         root.grid_columnconfigure(1, weight=1, uniform="buttons")
 
-        # Top frame: frequency input and execution count
+        # Top frame
         top_frame = tk.Frame(root)
         top_frame.grid(row=0, column=0, columnspan=2, sticky='ew', padx=10, pady=5)
-        top_frame.grid_columnconfigure(0, weight=0)
-        top_frame.grid_columnconfigure(1, weight=0)
         top_frame.grid_columnconfigure(2, weight=1)
 
         tk.Label(top_frame, text="Interval (minutes):").grid(row=0, column=0, sticky='w')
@@ -40,21 +38,18 @@ class CommandScheduler:
         self.execution_label = tk.Label(top_frame, text="Executions: 0")
         self.execution_label.grid(row=0, column=2, sticky='e')
 
-        # Command input section
+        # Command input
         tk.Label(root, text="Shell Command:").grid(row=1, column=0, sticky='w', padx=10, pady=(10, 0))
-
         self.command_text = tk.Text(root, height=4, width=34)
         self.command_text.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 10))
+        default_value = f"{os.getcwd()}\\run.bat"
+        self.command_text.insert("1.0", default_value)
 
-        # Action buttons
-        self.start_button = tk.Button(
-            root, image=self.play_icon, command=self.start_execution, padx=10
-        )
+        # Buttons
+        self.start_button = tk.Button(root, image=self.play_icon, command=self.start_execution, padx=10)
         self.start_button.grid(row=3, column=0, pady=15, padx=(10, 5), sticky='ew')
 
-        self.stop_button = tk.Button(
-            root, image=self.stop_icon, command=self.stop_execution, state='disabled', padx=10
-        )
+        self.stop_button = tk.Button(root, image=self.stop_icon, command=self.stop_execution, state='disabled', padx=10)
         self.stop_button.grid(row=3, column=1, pady=15, padx=(5, 10), sticky='ew')
 
     def generate_play_icon(self, size):
@@ -69,20 +64,39 @@ class CommandScheduler:
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         margin = size // 4
-        draw.rectangle(
-            [margin, margin, size - margin, size - margin],
-            fill="red"
-        )
+        draw.rectangle([margin, margin, size - margin, size - margin], fill="red")
         return ImageTk.PhotoImage(img)
+
+    def is_pytest_running(self):
+        return any(
+            'pytest' in ' '.join(proc.cmdline())
+            for proc in psutil.process_iter(attrs=['cmdline'])
+            if proc.info['cmdline'] and ('python' in proc.info['cmdline'][0])
+        )
+
+    def kill_pytest_processes(self):
+        for proc in psutil.process_iter(attrs=['pid', 'cmdline']):
+            try:
+                if proc.info['cmdline'] and 'pytest' in ' '.join(proc.info['cmdline']) and 'python' in proc.info['cmdline'][0]:
+                    psutil.Process(proc.info['pid']).kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
     def execute_command_periodically(self, interval_minutes, command):
         while self.is_running:
+            self.kill_pytest_processes()
+
             subprocess.Popen(command, shell=True)
             self.execution_count += 1
             self.execution_label.config(text=f"Executions: {self.execution_count}")
-            for _ in range(interval_minutes * 60):
-                if not self.is_running:
-                    return
+
+            start_time = time.time()
+            while self.is_running:
+                elapsed = time.time() - start_time
+                if elapsed >= interval_minutes * 60:
+                    break
+                if not self.is_pytest_running():
+                    break
                 time.sleep(1)
 
     def start_execution(self):
